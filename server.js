@@ -54,7 +54,7 @@ io.on('connection', socket => {
   socket.on('create-room', () => {
     leaveRoom(socket);
     const code = makeCode();
-    const room = { code, host: socket.id, guest: null, members: new Set([socket.id]), started: false };
+    const room = { code, host: socket.id, guest: null, members: new Set([socket.id]), started: false, guestReady: false };
     rooms.set(code, room);
     socket.data.room = code;
     socket.join(code);
@@ -83,19 +83,26 @@ io.on('connection', socket => {
     const difficulty = Number.isInteger(data?.difficulty) ? Math.max(0, Math.min(10, data.difficulty)) : 0;
     const map = Number.isInteger(data?.map) ? Math.max(0, Math.min(10, data.map)) : 0;
     room.started = true;
+    room.guestReady = false;
     io.to(room.guest).emit('start-match', { difficulty, map });
+  });
+
+  socket.on('guest-ready', () => {
+    const room = getRoom(socket);
+    if (room && room.guest === socket.id && room.started) room.guestReady = true;
   });
 
   socket.on('host-snapshot', data => {
     const room = getRoom(socket);
-    if (!room || room.host !== socket.id || !room.guest || !room.started) return;
+    if (!room || room.host !== socket.id || !room.guest || !room.started || !room.guestReady) return;
     if (!data || typeof data.g !== 'string' || data.g.length > 1_500_000) return;
     const snapshot = {
       g: data.g,
       tm: Number.isFinite(data.tm) ? data.tm : 0,
-      difficulty: Number.isInteger(data.difficulty) ? data.difficulty : 0
+      difficulty: Number.isInteger(data.difficulty) ? data.difficulty : 0,
+      seq: Number.isInteger(data.seq) ? data.seq : 0
     };
-    io.to(room.guest).volatile.emit('snapshot', snapshot);
+    io.to(room.guest).emit('snapshot', snapshot);
   });
 
   socket.on('guest-action', data => {
@@ -105,7 +112,7 @@ io.on('connection', socket => {
     if (data.type === 'click' && typeof data.id === 'string' && /^[a-zA-Z0-9_-]{1,24}$/.test(data.id)) safe = { type: 'click', id: data.id };
     else if (data.type === 'tower' && Number.isInteger(data.index) && data.index >= 0 && data.index < 100) safe = { type: 'tower', index: data.index };
     else if (data.type === 'pointer' && Number.isFinite(data.x) && Number.isFinite(data.y)) safe = { type: 'pointer', x: Math.max(0, Math.min(1, data.x)), y: Math.max(0, Math.min(1, data.y)) };
-    if (safe) io.to(room.host).emit('host-action', safe);
+    if (safe) { io.to(room.host).emit('host-action', safe); socket.emit('guest-action-sent'); }
   });
 
   socket.on('disconnect', () => leaveRoom(socket));

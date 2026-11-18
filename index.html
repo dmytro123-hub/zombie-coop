@@ -715,12 +715,32 @@ function abil(e,k,dt){
  if(k.ab===3){for(let i=0;i<3;i++){const h=K[0].hp*e.hm*.7;g.en.push({uid:++enemySeq,x:e.x,y:e.y,s:Math.max(0,e.s-8*(i+1)),hp:h,mx:h,k:0,w:e.w,hm:e.hm,rw:2});g.left[e.w]++}puff(e.x,e.y,'fire',10)}
 }
 function tab(n){$('menu').hidden=n!=='';window.scrollTo(0,0);for(const[k,v]of Object.entries({P:'pP',T:'pT',Z:'pZ',M:'pM'}))$(v).hidden=k!==n;$('playMenu').classList.toggle('sel',n==='P'||n==='M');$('tT').classList.toggle('sel',n==='T');$('tZ').classList.toggle('sel',n==='Z')}
-let net=null,netRole='',netRoom='',netReady=false,networkGuest=false,mpSnapshotAt=0;
+let net=null,netRole='',netRoom='',netReady=false,networkGuest=false,mpSnapshotAt=0,mpSnapshotSeq=0;
 function mpStatus(t){const e=$('mpStatus');if(e)e.textContent=t}
 function mpOpen(){ $('menu').hidden=true;$('mpPanel').hidden=false; if(!net){if(typeof io==='undefined'){mpStatus('Сервер не запущен. Открой игру через адрес Node.js сервера.');return}net=io();net.on('connect',()=>mpStatus('Подключено к игровому серверу'));net.on('connect_error',()=>mpStatus('Нет связи с сервером. Проверь адрес и запуск сервера.'));net.on('room-created',d=>{netRole='host';netRoom=d.code;netReady=true;$('mpRoom').hidden=false;$('mpRoom').textContent=d.code;mpStatus('Комната создана. Отправь код другу и дождись подключения.');});net.on('room-joined',d=>{netRole='guest';netRoom=d.code;netReady=true;$('mpRoom').hidden=false;$('mpRoom').textContent=d.code;mpStatus('Ты в комнате. Ожидаем, пока хозяин начнёт матч.');});net.on('peer-joined',()=>mpStatus('Друг подключился! Можно выбирать карту и начинать.'));net.on('peer-left',()=>mpStatus('Друг отключился от комнаты.'));
 net.on('room-error',d=>mpStatus(d.message||'Не удалось войти в комнату'));
-net.on('start-match',d=>{if(netRole==='guest'){networkGuest=true;const di=Math.max(0,Math.min(D.length-1,d.difficulty|0));play(D[di],d.map|0);mpStatus('Матч начался! Ты подключён к общей игре.')}});
-net.on('snapshot',d=>{if(netRole==='guest'&&networkGuest&&d&&d.g){try{g=JSON.parse(d.g,(k,v)=>v&&v.__set?new Set(v.__set):v);tm=d.tm||0;if(d.difficulty!==undefined)dif=D[d.difficulty]||dif;draw();ui()}catch(e){}}});
+net.on('guest-action-sent',()=>{if(netRole==='guest'&&networkGuest)mpStatus('Команда отправлена хозяину комнаты…')});
+net.on('start-match',d=>{if(netRole==='guest'){
+ networkGuest=true;const di=Math.max(0,Math.min(D.length-1,d.difficulty|0));
+ play(D[di],d.map|0);net.emit('guest-ready');
+ mpStatus('Матч запущен. Синхронизируем состояние хозяина…');
+}});
+net.on('snapshot',d=>{if(netRole==='guest'&&networkGuest&&d&&typeof d.g==='string'){
+ try{
+  const next=JSON.parse(d.g,(k,v)=>v&&Array.isArray(v.__set)?new Set(v.__set):v);
+  if(!next||!Array.isArray(next.tw)||!Array.isArray(next.en)||!Array.isArray(next.pr))throw new Error('Неверная структура состояния');
+  // Restore object links after JSON transfer: projectiles must point to the
+  // matching enemy object, and selection must point to a real tower.
+  const enemies=new Map(next.en.map(e=>[e.uid,e]));
+  for(const p of next.pr)if(p.tg&&p.tg.uid!=null)p.tg=enemies.get(p.tg.uid)||p.tg;
+  if(next.sel){next.sel=next.tw.find(t=>t.cx===next.sel.cx&&t.cy===next.sel.cy&&t.ty===next.sel.ty)||null;}
+  g=next;tm=Number.isFinite(d.tm)?d.tm:tm;
+  if(Number.isInteger(d.difficulty))dif=D[Math.max(0,Math.min(D.length-1,d.difficulty))]||dif;
+  mpSnapshotAt=Date.now();mpSnapshotSeq=d.seq||mpSnapshotSeq+1;
+  mpStatus('Общая игра синхронизирована · волна '+g.W+' · башен '+g.tw.length);
+  draw();ui();
+ }catch(e){console.warn('Не удалось применить состояние комнаты',e);mpStatus('Ошибка синхронизации: '+e.message)}
+}});
 net.on('host-action',d=>{if(netRole!=='host'||!d)return;if(d.type==='click'&&d.id){const el=$(d.id);if(el)el.click()}else if(d.type==='tower'&&Number.isInteger(d.index)){g.ty=d.index;g.sel=null;g.branchPending=null}else if(d.type==='pointer'&&Number.isFinite(d.x)&&Number.isFinite(d.y)){const r=C.getBoundingClientRect();C.dispatchEvent(new PointerEvent('pointerdown',{clientX:r.left+d.x*r.width,clientY:r.top+d.y*r.height,bubbles:true}))}});
 }
 }
@@ -729,8 +749,15 @@ $('mpCreate').onclick=()=>{if(!net)mpOpen();if(net){if(net.connected)net.emit('c
 $('mpJoin').onclick=()=>{if(!net)mpOpen();const code=$('mpCodeInput').value.trim();if(!/^\d{4}$/.test(code)){mpStatus('Введи четырёхзначный код комнаты');return}if(net){if(net.connected)net.emit('join-room',code);else{mpStatus('Подключаемся к серверу…');net.once('connect',()=>net.emit('join-room',code))}}};
 // Remote players send their controls to the host; the host remains authoritative.
 document.addEventListener('click',e=>{if(netRole!=='guest'||!networkGuest)return;const b=e.target.closest('button');if(!b)return;if(b.id&&['up','sl','ab','brA','brB','skip','skipYes','skipNo','sp','mn','bk','rs'].includes(b.id)){e.preventDefault();e.stopImmediatePropagation();net.emit('guest-action',{type:'click',id:b.id});return}if(b.closest('#tw')&&b.dataset.i!==undefined){e.preventDefault();e.stopImmediatePropagation();net.emit('guest-action',{type:'tower',index:+b.dataset.i});}},true);
-C.addEventListener('pointerdown',e=>{if(netRole==='guest'&&networkGuest){e.preventDefault();e.stopImmediatePropagation();const r=C.getBoundingClientRect();net.emit('guest-action',{type:'pointer',x:(e.clientX-r.left)/r.width,y:(e.clientY-r.top)/r.height})}},true);
-setInterval(()=>{if(net&&netRole==='host'&&netReady&&inGame){const raw=JSON.stringify(g,(k,v)=>k==='m'||k==='mesh'||k==='hb'?undefined:(v instanceof Set?{__set:[...v]}:v));net.emit('host-snapshot',{g:raw,tm,difficulty:D.indexOf(dif)})}},180);
+C.addEventListener('pointerdown',e=>{if(netRole==='guest'&&networkGuest){e.preventDefault();e.stopImmediatePropagation();const r=C.getBoundingClientRect();net.emit('guest-action',{type:'pointer',x:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),y:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))})}},true);
+setInterval(()=>{if(net&&netRole==='host'&&netReady&&inGame){
+ try{
+  const raw=JSON.stringify(g,(k,v)=>k==='m'||k==='mesh'||k==='hb'?undefined:(v instanceof Set?{__set:[...v]}:v));
+  if(typeof raw==='string'&&raw.length<1_500_000)
+   net.emit('host-snapshot',{g:raw,tm,difficulty:D.indexOf(dif),seq:++mpSnapshotSeq});
+  else mpStatus('Состояние игры слишком большое для синхронизации');
+ }catch(e){console.warn('Не удалось отправить состояние комнаты',e);mpStatus('Ошибка отправки состояния: '+e.message)}
+}},150);
 
 let pend=null;
 function chooseMap(d){pend=d;tab('M')}
