@@ -1,0 +1,13 @@
+{
+  "name": "zombie-base-defense-coop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Online co-op server for Zombie Base Defense browser game",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  }
+}
